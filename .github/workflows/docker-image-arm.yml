@@ -24,7 +24,7 @@ jobs:
     
     - name: Build and push the Docker image latest
       run: |
-        docker build . --file Dockerfile --tag neytor/tools:arm && 
+        docker build . --file Dockerfile-arm --tag neytor/tools:arm && 
         docker image ls && docker push neytor/tools:arm
 
     # - name: Build and push the Docker image with tag
