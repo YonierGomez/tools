@@ -1,36 +1,28 @@
-name: Docker Image CI ARM - Tools ARM
+# DEPRECATED: This workflow has been replaced by docker-image.yml
+# which uses native ubuntu-24.04-arm runners instead of self-hosted ARM runners.
+# The Dockerfile-arm (FROM arm64v8/alpine) is superseded by the standard
+# Dockerfile (FROM alpine) which builds natively for linux/arm64.
+#
+# This file is kept for reference only and will not run.
+# See docker-image.yml for the current multi-arch build configuration.
+name: '[DEPRECATED] Docker Image CI ARM - Tools ARM'
 
 on:
-  workflow_dispatch: # Agrega esta entrada para habilitar la ejecución manual
-    branches: [ "master", "main" ] # Opcional: restringe las ramas donde se puede ejecutar
+  workflow_dispatch:
+    inputs:
+      _notice:
+        description: 'This workflow is deprecated. Use docker-image.yml instead.'
+        required: false
+        type: string
 
 jobs:
-
-  build_push_image:
-
-    runs-on: self-hosted
-
+  deprecated-notice:
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6.0.2
-      name: Download codigo from repo
-      
-    - name: Docker Login
-      uses: docker/login-action@v4.0.0
-      with:
-        registry: docker.io
-        username: ${{ secrets.USER_HUB }}
-        password: ${{ secrets.PASS_HUB }}
-        
-    
-    - name: Build and push the Docker image latest
-      run: |
-        docker build . --file Dockerfile-arm --tag neytor/tools:arm && 
-        docker image ls && docker push neytor/tools:arm
+      - name: Notice
+        run: |
+          echo '::warning::This workflow is deprecated.'
+          echo '::warning::ARM builds are now handled natively by docker-image.yml'
+          echo '::warning::using ubuntu-24.04-arm runners. Do not use this file.'
 
-    # - name: Build and push the Docker image with tag
-    #   run: |
-    #     docker build . --file Dockerfile --tag neytor/tools:arm.v2 && \
-    #     docker image ls && docker push neytor/tools:arm.v2
-      
-    
 
