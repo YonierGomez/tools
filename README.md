@@ -68,6 +68,32 @@ services:
 | `bash` | Shell |
 | `zip` / `unzip` | Archive handling |
 
+## Demo
+
+### curl — HTTP requests & endpoint validation
+![curl demo](assets/01-curl.gif)
+
+### wget — File downloads
+![wget demo](assets/02-wget.gif)
+
+### bind-tools — DNS diagnostics
+![bind-tools demo](assets/03-bind-tools.gif)
+
+### iproute2 — Network tooling (`ss`, `ip`)
+![iproute2 demo](assets/04-iproute2.gif)
+
+### aws-cli — AWS CLI v2 operations
+![aws-cli demo](assets/05-aws-cli.gif)
+
+### kubectl — Kubernetes cluster management
+![kubectl demo](assets/06-kubectl.gif)
+
+### python3 — Scripting & automation
+![python3 demo](assets/07-python3.gif)
+
+### zip / unzip — Archive handling
+![zip/unzip demo](assets/08-zip-unzip.gif)
+
 ## Supported Architectures
 
 | Architecture | Tag |
