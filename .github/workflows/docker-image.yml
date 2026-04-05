@@ -1,4 +1,4 @@
-name: Docker Multi-Arch CI - Samba
+name: Docker Multi-Arch CI - Tools
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Force build even if Samba version unchanged'
+        description: 'Force build even if Alpine version unchanged'
         required: false
         type: choice
         default: 'false'
@@ -26,21 +26,20 @@ permissions:
   contents: write
 
 jobs:
-  # ── Phase 1: detect whether a new Samba version is available ─────────────────
+  # ── Phase 1: detect whether a new Alpine version is available ────────────────
   check-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.samba_version.outputs.version }}
+      version: ${{ steps.alpine_version.outputs.version }}
       should_build: ${{ steps.compare.outputs.should_build }}
 
     steps:
-      - name: Get latest Samba version from Alpine
-        id: samba_version
+      - name: Get latest Alpine version
+        id: alpine_version
         run: |
-          SAMBA_VERSION=$(docker run --rm alpine:latest sh -c \
-            "apk update > /dev/null 2>&1 && apk list samba 2>/dev/null | grep '^samba-' | head -1 | sed 's/samba-\([^ ]*\).*/\1/'")
-          echo "version=$SAMBA_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Samba version in Alpine: $SAMBA_VERSION"
+          ALPINE_VERSION=$(docker run --rm alpine:latest cat /etc/alpine-release)
+          echo "version=$ALPINE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Alpine version: $ALPINE_VERSION"
 
       - name: Get latest GitHub release tag
         id: get_release
@@ -58,7 +57,7 @@ jobs:
       - name: Decide whether to build
         id: compare
         run: |
-          CURRENT="v${{ steps.samba_version.outputs.version }}"
+          CURRENT="v${{ steps.alpine_version.outputs.version }}"
           LATEST="${{ steps.get_release.outputs.latest }}"
           FORCE="${{ github.event.inputs.force_build }}"
           if [[ "$CURRENT" != "$LATEST" || "$FORCE" == "true" ]]; then
@@ -103,7 +102,7 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          outputs: type=image,name=neytor/samba,push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=neytor/tools,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
@@ -146,11 +145,11 @@ jobs:
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           docker buildx imagetools create \
-            -t neytor/samba:latest \
-            -t neytor/samba:${VERSION} \
-            $(printf 'neytor/samba@sha256:%s ' $(ls /tmp/digests))
+            -t neytor/tools:latest \
+            -t neytor/tools:${VERSION} \
+            $(printf 'neytor/tools@sha256:%s ' $(ls /tmp/digests))
 
-  # ── Phase 4: GitHub Release with changelog ────────────────────────────────────
+  # ── Phase 4: GitHub Release ───────────────────────────────────────────────────
   release:
     needs: [check-version, build-and-push]
     if: needs.check-version.outputs.should_build == 'true' && github.event.inputs.skip_release != 'true'
@@ -166,21 +165,6 @@ jobs:
             --repo ${{ github.repository }} 2>/dev/null && echo "true" || echo "false")
           echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
 
-      - name: Get Samba release notes
-        id: changelog
-        run: |
-          VERSION="${{ needs.check-version.outputs.version }}"
-          SAMBA_BASE=$(echo "$VERSION" | sed 's/-r[0-9]*//')
-          URL="https://www.samba.org/samba/history/samba-${SAMBA_BASE}.html"
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "base_version=$SAMBA_BASE" >> "$GITHUB_OUTPUT"
-          NOTES=$(curl -sf "$URL" 2>/dev/null | \
-            sed -n '/Changes since/,/<\/pre>/p' | \
-            sed 's/<[^>]*>//g' | \
-            sed '/^$/d' | \
-            head -60 || echo "No release notes found.")
-          echo "$NOTES" > /tmp/samba_changelog.txt
-
       - name: Create GitHub Release
         if: steps.check_release.outputs.exists == 'false'
         env:
@@ -188,17 +172,15 @@ jobs:
         run: |
           TAG="v${{ needs.check-version.outputs.version }}"
           VERSION="${{ needs.check-version.outputs.version }}"
-          CHANGELOG=$(cat /tmp/samba_changelog.txt)
-          NOTES_URL="${{ steps.changelog.outputs.url }}"
 
           cat > /tmp/release-notes.md << NOTES
-          ## Samba ${VERSION} on Alpine Linux
+          ## neytor/tools — Alpine Linux ${VERSION}
 
           ### Docker Images
 
           \`\`\`bash
-          docker pull neytor/samba:latest
-          docker pull neytor/samba:${VERSION}
+          docker pull neytor/tools:latest
+          docker pull neytor/tools:${VERSION}
           \`\`\`
 
           ### Supported Architectures
@@ -208,22 +190,28 @@ jobs:
           | linux/amd64 | \`latest\`, \`${VERSION}\` |
           | linux/arm64 | \`latest\`, \`${VERSION}\` |
 
-          ### Samba Changelog
+          ### Installed Tools
 
-          \`\`\`
-          ${CHANGELOG}
-          \`\`\`
-
-          > [Full release notes](${NOTES_URL})
+          | Package | Purpose |
+          |---|---|
+          | \`curl\` | HTTP requests & endpoint validation |
+          | \`wget\` | File downloads |
+          | \`bind-tools\` | DNS diagnostics (dig, nslookup, host) |
+          | \`iproute2\` | Network tooling (ss, ip) |
+          | \`aws-cli\` | AWS CLI v2 operations |
+          | \`kubectl\` | Kubernetes cluster management |
+          | \`python3\` | Scripting & automation |
+          | \`bash\` | Shell |
+          | \`zip\` / \`unzip\` | Archive handling |
 
           ### Quick Start
 
           \`\`\`bash
-          docker run -d --name samba -p 445:445 -v samba:/download neytor/samba
+          docker run --rm -it neytor/tools
           \`\`\`
           NOTES
 
           gh release create "$TAG" \
             --repo ${{ github.repository }} \
-            --title "Samba $VERSION" \
+            --title "Alpine ${VERSION}" \
             --notes-file /tmp/release-notes.md
