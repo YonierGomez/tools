@@ -1,14 +1,20 @@
-name: Docker Multi-Arch CI - Tools
+name: Docker Multi-Arch CI - Samba
 
 on:
-  push:
-    branches: [ "master", "main" ]
-  pull_request:
-    branches: [ "master", "main" ]
+  schedule:
+    - cron: '0 8 * * 1'  # Every Monday 08:00 UTC
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Force build even if no changes'
+        description: 'Force build even if Samba version unchanged'
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'true'
+          - 'false'
+      skip_release:
+        description: 'Build and push Docker image but skip GitHub Release creation'
         required: false
         type: choice
         default: 'false'
@@ -16,37 +22,57 @@ on:
           - 'true'
           - 'false'
 
-jobs:
+permissions:
+  contents: write
 
-  # ── PR-only build (no push) ───────────────────────────────────────────────────
-  build-pr:
-    if: github.event_name == 'pull_request'
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            runner: ubuntu-24.04-arm
+jobs:
+  # ── Phase 1: detect whether a new Samba version is available ─────────────────
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.samba_version.outputs.version }}
+      should_build: ${{ steps.compare.outputs.should_build }}
 
     steps:
-      - uses: actions/checkout@v6.0.2
+      - name: Get latest Samba version from Alpine
+        id: samba_version
+        run: |
+          SAMBA_VERSION=$(docker run --rm alpine:latest sh -c \
+            "apk update > /dev/null 2>&1 && apk list samba 2>/dev/null | grep '^samba-' | head -1 | sed 's/samba-\([^ ]*\).*/\1/'")
+          echo "version=$SAMBA_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Samba version in Alpine: $SAMBA_VERSION"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.0.0
+      - name: Get latest GitHub release tag
+        id: get_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST=$(gh release list \
+            --repo ${{ github.repository }} \
+            --limit 1 \
+            --json tagName \
+            --jq '.[0].tagName // ""')
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Latest release: $LATEST"
 
-      - name: Build (no push)
-        uses: docker/build-push-action@v7.0.0
-        with:
-          context: .
-          platforms: ${{ matrix.platform }}
-          push: false
+      - name: Decide whether to build
+        id: compare
+        run: |
+          CURRENT="v${{ steps.samba_version.outputs.version }}"
+          LATEST="${{ steps.get_release.outputs.latest }}"
+          FORCE="${{ github.event.inputs.force_build }}"
+          if [[ "$CURRENT" != "$LATEST" || "$FORCE" == "true" ]]; then
+            echo "should_build=true"  >> "$GITHUB_OUTPUT"
+            echo "Build needed: current=$CURRENT, latest_release=$LATEST, force=$FORCE"
+          else
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "No new version — skipping build."
+          fi
 
-  # ── Phase 1: build per-arch on native runners ─────────────────────────────────
+  # ── Phase 2: build per-arch on native runners (no QEMU) ──────────────────────
   build:
-    if: github.event_name != 'pull_request'
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -66,7 +92,6 @@ jobs:
       - name: Docker Login
         uses: docker/login-action@v4.0.0
         with:
-          registry: docker.io
           username: ${{ secrets.USER_HUB }}
           password: ${{ secrets.PASS_HUB }}
 
@@ -75,9 +100,10 @@ jobs:
         uses: docker/build-push-action@v7.0.0
         with:
           context: .
+          file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          outputs: type=image,name=neytor/tools,push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=neytor/samba,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
         run: |
@@ -93,10 +119,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ── Phase 2: merge digests into multi-arch manifest ──────────────────────────
+  # ── Phase 3: merge digests into multi-arch manifest ──────────────────────────
   build-and-push:
-    needs: build
-    if: github.event_name != 'pull_request'
+    needs: [check-version, build]
+    if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -113,14 +139,91 @@ jobs:
       - name: Docker Login
         uses: docker/login-action@v4.0.0
         with:
-          registry: docker.io
           username: ${{ secrets.USER_HUB }}
           password: ${{ secrets.PASS_HUB }}
 
       - name: Create and push multi-arch manifest
         run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
           docker buildx imagetools create \
-            -t neytor/tools:latest \
-            $(printf 'neytor/tools@sha256:%s ' $(ls /tmp/digests))
+            -t neytor/samba:latest \
+            -t neytor/samba:${VERSION} \
+            $(printf 'neytor/samba@sha256:%s ' $(ls /tmp/digests))
 
+  # ── Phase 4: GitHub Release with changelog ────────────────────────────────────
+  release:
+    needs: [check-version, build-and-push]
+    if: needs.check-version.outputs.should_build == 'true' && github.event.inputs.skip_release != 'true'
+    runs-on: ubuntu-latest
 
+    steps:
+      - name: Check if release already exists
+        id: check_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTS=$(gh release view "v${{ needs.check-version.outputs.version }}" \
+            --repo ${{ github.repository }} 2>/dev/null && echo "true" || echo "false")
+          echo "exists=$EXISTS" >> "$GITHUB_OUTPUT"
+
+      - name: Get Samba release notes
+        id: changelog
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          SAMBA_BASE=$(echo "$VERSION" | sed 's/-r[0-9]*//')
+          URL="https://www.samba.org/samba/history/samba-${SAMBA_BASE}.html"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "base_version=$SAMBA_BASE" >> "$GITHUB_OUTPUT"
+          NOTES=$(curl -sf "$URL" 2>/dev/null | \
+            sed -n '/Changes since/,/<\/pre>/p' | \
+            sed 's/<[^>]*>//g' | \
+            sed '/^$/d' | \
+            head -60 || echo "No release notes found.")
+          echo "$NOTES" > /tmp/samba_changelog.txt
+
+      - name: Create GitHub Release
+        if: steps.check_release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ needs.check-version.outputs.version }}"
+          VERSION="${{ needs.check-version.outputs.version }}"
+          CHANGELOG=$(cat /tmp/samba_changelog.txt)
+          NOTES_URL="${{ steps.changelog.outputs.url }}"
+
+          cat > /tmp/release-notes.md << NOTES
+          ## Samba ${VERSION} on Alpine Linux
+
+          ### Docker Images
+
+          \`\`\`bash
+          docker pull neytor/samba:latest
+          docker pull neytor/samba:${VERSION}
+          \`\`\`
+
+          ### Supported Architectures
+
+          | Architecture | Tag |
+          |---|---|
+          | linux/amd64 | \`latest\`, \`${VERSION}\` |
+          | linux/arm64 | \`latest\`, \`${VERSION}\` |
+
+          ### Samba Changelog
+
+          \`\`\`
+          ${CHANGELOG}
+          \`\`\`
+
+          > [Full release notes](${NOTES_URL})
+
+          ### Quick Start
+
+          \`\`\`bash
+          docker run -d --name samba -p 445:445 -v samba:/download neytor/samba
+          \`\`\`
+          NOTES
+
+          gh release create "$TAG" \
+            --repo ${{ github.repository }} \
+            --title "Samba $VERSION" \
+            --notes-file /tmp/release-notes.md
